@@ -1,0 +1,30 @@
+# Python virtual environments
+myenv/
+venv/
+.venv/
+env/
+
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# Environment/secret files
+.env
+.env.*
+
+# Large graph/data files
+*.adjlist
+*.edgelist
+*.csv
+*.tsv
+*.jsonl
+*.parquet
+*.gexf
+
+# Generated visualizations and outputs
+*.html
+outputs/
