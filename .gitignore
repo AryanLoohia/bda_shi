@@ -28,3 +28,4 @@ __pycache__/
 # Generated visualizations and outputs
 *.html
 outputs/
+network_results/
