@@ -94,7 +94,7 @@ def get_k_hop_neighbors(start_node, edge_weights, threshold, k_depth):
 def main():
     print("Process started...")
     N_SAMPLES = 1000   
-    K_HOPS = 6
+    K_HOPS = 3
     TOP_K = 20         
     PCA_DIR = "pca_results"
     INDEGREE_FILE = os.path.join(PCA_DIR, "global_indegrees.txt")
