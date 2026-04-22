@@ -2,7 +2,35 @@ import collections
 import math
 import random
 import os
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
+def plot_interaction_distributions(raw_z_scores, all_s_scores):
+    """
+    Plots the distributions of normalized interaction scores and the net Sab.
+    """
+    sns.set_style("whitegrid")
+    plt.figure(figsize=(12, 8))
+
+    # 1. Plot individual Normalized Z-scores
+    # These should overlap significantly around 0
+    sns.kdeplot(raw_z_scores['r'], label='Normalized Retweets ($n_r$)', fill=True, alpha=0.2)
+    sns.kdeplot(raw_z_scores['m'], label='Normalized Mentions ($n_m$)', fill=True, alpha=0.2)
+    sns.kdeplot(raw_z_scores['p'], label='Normalized Replies ($n_p$)', fill=True, alpha=0.2)
+
+    # 2. Plot the Net Sab Score
+    # This will be much wider because it's a weighted sum (4np + 1nm + 1nr)
+    sns.kdeplot(all_s_scores, label='Net $S_{ab}$ Score', color='black', linewidth=3, linestyle='--')
+
+    plt.axvline(0, color='red', linestyle=':', label='Mean (0.0)')
+    plt.title("Distribution of Normalized Interaction Scores & Net $S_{ab}$", fontsize=15)
+    plt.xlabel("Standard Deviations from Mean ($\sigma$)", fontsize=12)
+    plt.ylabel("Density", fontsize=12)
+    plt.legend()
+    plt.show()
+
+    
 # --- 1. Data Loading & Parsing Functions ---
 
 def parse_node_dict(filename):
@@ -92,58 +120,85 @@ def main():
     reply_dict, P_total = parse_node_dict('one.reply.node_dict.txt')
     follows_graph = parse_adjlist('one.adjlist')
 
-    # Precompute stats
+    # Precompute base stats
     R_a, R_b = calculate_stats(retweet_dict)
     M_a, M_b = calculate_stats(mention_dict)
     P_a, P_b = calculate_stats(reply_dict)
 
-    # Calculate S_ab for every FOLLOWS edge
-    print("Calculating edge weights and threshold...")
-    edge_weights = collections.defaultdict(dict)
-    all_s_scores = [] # Collector for global mean calculation
+    # --- NEW: PASS 1 - COLLECT RAW SCORES FOR NORMALIZATION ---
+    print("Pass 1: Collecting raw Z-scores for normalization...")
+    raw_z_scores = {'p': [], 'm': [], 'r': []}
+    edge_data = [] # To store coords and avoid triple-looping later
 
     for a, followed_list in follows_graph.items():
         for b in followed_list:
-            z_r = get_z_score(a, b, retweet_dict, R_a, R_b, R_total)
-            z_m = get_z_score(a, b, mention_dict, M_a, M_b, M_total)
             z_p = get_z_score(a, b, reply_dict, P_a, P_b, P_total)
+            z_m = get_z_score(a, b, mention_dict, M_a, M_b, M_total)
+            z_r = get_z_score(a, b, retweet_dict, R_a, R_b, R_total)
             
-            s_ab = (4 * z_p) + (1 * z_m) + (1 * z_r)
-            edge_weights[a][b] = s_ab
-            all_s_scores.append(s_ab)
+            raw_z_scores['p'].append(z_p)
+            raw_z_scores['m'].append(z_m)
+            raw_z_scores['r'].append(z_r)
+            edge_data.append((a, b, z_p, z_m, z_r))
 
-    # --- DYNAMIC THRESHOLD INTEGRATION ---
-    if all_s_scores:
-        THRESHOLD = sum(all_s_scores) / len(all_s_scores)
-    else:
-        THRESHOLD = 0.0 # Fallback
-    
-    # THRESHOLD =200
-    print(f"Calculated Global Mean Threshold: {THRESHOLD:.4f}")
+    # Calculate Global Means and StdDevs
+    # Adding a tiny epsilon (1e-9) to std to avoid division by zero
+    norm_stats = {
+        'p': (np.mean(raw_z_scores['p']), np.std(raw_z_scores['p']) + 1e-9),
+        'm': (np.mean(raw_z_scores['m']), np.std(raw_z_scores['m']) + 1e-9),
+        'r': (np.mean(raw_z_scores['r']), np.std(raw_z_scores['r']) + 1e-9)
+    }
 
-    # Create directory
+    print(f"Normalization Stats:")
+    print(f"  Reply   - μ: {norm_stats['p'][0]:.4f}, σ: {norm_stats['p'][1]:.4f}")
+    print(f"  Mention - μ: {norm_stats['m'][0]:.4f}, σ: {norm_stats['m'][1]:.4f}")
+    print(f"  Retweet - μ: {norm_stats['r'][0]:.4f}, σ: {norm_stats['r'][1]:.4f}")
+
+    # --- NEW: PASS 2 - CALCULATE NORMALIZED S_ab ---
+    print("Pass 2: Calculating normalized S_ab weights and threshold...")
+    edge_weights = collections.defaultdict(dict)
+    all_s_scores = []
+
+    for a, b, zp, zm, zr in edge_data:
+        # Standardize: (Value - Mean) / StdDev
+        n_p = (zp - norm_stats['p'][0]) / norm_stats['p'][1]
+        n_m = (zm - norm_stats['m'][0]) / norm_stats['m'][1]
+        n_r = (zr - norm_stats['r'][0]) / norm_stats['r'][1]
+        
+        # Apply Weights to Normalized values
+        s_ab = (4 * n_p) + (1 * n_m) + (1 * n_r)
+        
+        edge_weights[a][b] = s_ab
+        all_s_scores.append(s_ab)
+
+    # Dynamic Threshold
+    # THRESHOLD = np.mean(all_s_scores) if all_s_scores else 0.0
+    THRESHOLD = np.percentile(all_s_scores, 75)
+    print(f"Calculated Global Normalized Mean Threshold: {THRESHOLD:.4f}")
+
+    plot_interaction_distributions(raw_z_scores, all_s_scores)
+    # --- (Rest of the BFS and file writing logic remains the same) ---
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
-    # Select samples
     available_nodes = list(follows_graph.keys())
     sampled_nodes = random.sample(available_nodes, min(N_SAMPLES, len(available_nodes)))
 
-    # Process and Write to file
-    print(f"Performing {K_HOPS}-hop BFS for {len(sampled_nodes)} nodes...")
+    print(f"Performing {K_HOPS}-hop BFS...")
     with open(OUTPUT_FILE, 'w') as f:
         f.write(f"K-Hop BFS Reachability Report (K={K_HOPS})\n")
-        f.write(f"Dynamic Threshold (Mean) S_ab > {THRESHOLD:.4f}\n")
+        f.write(f"Normalized Threshold S_ab > {THRESHOLD:.9f}\n")
         f.write("=" * 80 + "\n")
-        f.write(f"{'Source':<10} | {'Nodes Found':<12} | {'Reached Nodes (ID@Hop)'}\n")
+        f.write(f"{'Source':<10} | {'Nodes Found':<12}\n")
         f.write("-" * 80 + "\n")
 
         for node in sampled_nodes:
             cluster = get_k_hop_neighbors(node, edge_weights, THRESHOLD, K_HOPS)
-            # cluster_str = ", ".join([f"{n}@{h}" for n, h, w in cluster])
-            f.write(f"{node:<10} | {len(cluster):<12}\n ")
+            f.write(f"{node:<10} | {len(cluster):<12}\n")
 
     print(f"Complete! Results saved in: {OUTPUT_FILE}")
+
+
 
 if __name__ == "__main__":
     main()
