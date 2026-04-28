@@ -42,6 +42,15 @@ class Config:
     output_dir: str = "outputs"
     plots_dir: str = "outputs/plots"
 
+    # --- Data file names (Higgs dataset) ---
+    follow_file: str = "higgs-social_network.edgelist"
+    retweet_file: str = "higgs-retweet_network.edgelist"
+    mention_file: str = "higgs-mention_network.edgelist"
+    reply_file: str = "higgs-reply_network.edgelist"
+
+    # --- Node subsampling ---
+    max_nodes: int = 20_000  # subsample to this many nodes for tractability
+
     # --- Relation weights for combined score (Step 5) ---
     alpha_follow: float = 0.20
     beta_retweet: float = 0.35

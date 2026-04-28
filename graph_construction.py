@@ -15,36 +15,88 @@ from scipy import sparse
 from utils import Config, log, load_csv, save_csv, ensure_dir, build_node_mapping
 
 # ===================================================================
-# STEP 1 — Load and preprocess
+# STEP 1 — Load and preprocess (Higgs edgelist format)
 # ===================================================================
 
-def _load_single(path: str, default_value: int = 1) -> pd.DataFrame:
-    """Load a single relation CSV and standardize columns."""
-    df = pd.read_csv(path)
+def _load_edgelist(path: str, default_value: int = 1) -> pd.DataFrame:
+    """
+    Load a single edgelist file (space/tab separated, no header).
+    Handles both 2-column (source target) and 3-column (source target value) formats.
+    """
+    log.info(f"  Loading {os.path.basename(path)} ...")
 
-    # Standardize column names
-    cols = [c.strip().lower() for c in df.columns]
-    df.columns = cols
+    # Try reading as space/tab separated, no header
+    df = pd.read_csv(path, sep=r'\s+', header=None, comment='#',
+                     engine='python', dtype={0: int, 1: int})
 
-    # Rename first two columns to source/target if needed
-    if len(df.columns) == 2:
+    if df.shape[1] == 2:
         df.columns = ["source", "target"]
         df["value"] = default_value
-    elif len(df.columns) >= 3:
-        df.columns = ["source", "target", "value"] + list(df.columns[3:])
-        df = df[["source", "target", "value"]]
+    elif df.shape[1] >= 3:
+        df = df.iloc[:, :3]
+        df.columns = ["source", "target", "value"]
     else:
-        raise ValueError(f"Unexpected number of columns in {path}: {len(df.columns)}")
+        raise ValueError(f"Unexpected number of columns in {path}: {df.shape[1]}")
 
     # Remove self-loops
     before = len(df)
     df = df[df["source"] != df["target"]].copy()
     removed = before - len(df)
     if removed > 0:
-        log.info(f"  Removed {removed} self-loops from {os.path.basename(path)}")
+        log.info(f"    Removed {removed} self-loops")
 
     df["value"] = pd.to_numeric(df["value"], errors="coerce").fillna(default_value).astype(float)
+    log.info(f"    {len(df)} edges loaded")
     return df
+
+
+def _subsample_nodes(
+    df_follow: pd.DataFrame,
+    df_retweet: pd.DataFrame,
+    df_mention: pd.DataFrame,
+    df_reply: pd.DataFrame,
+    max_nodes: int,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Subsample to the top `max_nodes` most active nodes.
+    Activity = total times a node appears as source or target across all relations.
+    Then filter all DataFrames to only include edges within the selected nodes.
+    """
+    from collections import Counter
+
+    log.info(f"  Subsampling to {max_nodes} most active nodes ...")
+
+    # Count activity across all relations
+    activity = Counter()
+    for df in [df_follow, df_retweet, df_mention, df_reply]:
+        activity.update(df["source"].values)
+        activity.update(df["target"].values)
+
+    total_nodes = len(activity)
+    log.info(f"    Total unique nodes across all files: {total_nodes}")
+
+    if total_nodes <= max_nodes:
+        log.info(f"    No subsampling needed ({total_nodes} <= {max_nodes})")
+        return df_follow, df_retweet, df_mention, df_reply
+
+    # Pick top-k most active nodes
+    top_nodes = set(n for n, _ in activity.most_common(max_nodes))
+    log.info(f"    Selected top {len(top_nodes)} nodes by activity")
+
+    # Filter all DataFrames
+    def _filter(df):
+        mask = df["source"].isin(top_nodes) & df["target"].isin(top_nodes)
+        return df[mask].copy()
+
+    df_follow  = _filter(df_follow)
+    df_retweet = _filter(df_retweet)
+    df_mention = _filter(df_mention)
+    df_reply   = _filter(df_reply)
+
+    log.info(f"    After filtering — follows: {len(df_follow)}, retweets: {len(df_retweet)}, "
+             f"mentions: {len(df_mention)}, replies: {len(df_reply)}")
+
+    return df_follow, df_retweet, df_mention, df_reply
 
 
 def load_and_preprocess(cfg: Config) -> Tuple[
@@ -56,26 +108,33 @@ def load_and_preprocess(cfg: Config) -> Tuple[
     pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame,  # raw dfs
 ]:
     """
-    Load all four relation files, map node IDs, and return sparse matrices.
+    Load all four Higgs edgelist files, subsample to max_nodes,
+    map node IDs, and return sparse matrices.
     """
     log.info("=" * 60)
     log.info("STEP 1: Loading and preprocessing data")
     log.info("=" * 60)
 
-    follows_path  = os.path.join(cfg.data_dir, "follows.csv")
-    retweets_path = os.path.join(cfg.data_dir, "retweets.csv")
-    mentions_path = os.path.join(cfg.data_dir, "mentions.csv")
-    replies_path  = os.path.join(cfg.data_dir, "replies.csv")
+    follows_path  = os.path.join(cfg.data_dir, cfg.follow_file)
+    retweets_path = os.path.join(cfg.data_dir, cfg.retweet_file)
+    mentions_path = os.path.join(cfg.data_dir, cfg.mention_file)
+    replies_path  = os.path.join(cfg.data_dir, cfg.reply_file)
 
-    df_follow  = _load_single(follows_path, default_value=1)
-    df_retweet = _load_single(retweets_path)
-    df_mention = _load_single(mentions_path)
-    df_reply   = _load_single(replies_path)
+    df_follow  = _load_edgelist(follows_path, default_value=1)
+    df_retweet = _load_edgelist(retweets_path)
+    df_mention = _load_edgelist(mentions_path)
+    df_reply   = _load_edgelist(replies_path)
 
-    log.info(f"  follows:  {len(df_follow)} edges")
-    log.info(f"  retweets: {len(df_retweet)} edges")
-    log.info(f"  mentions: {len(df_mention)} edges")
-    log.info(f"  replies:  {len(df_reply)} edges")
+    # Subsample to max_nodes
+    df_follow, df_retweet, df_mention, df_reply = _subsample_nodes(
+        df_follow, df_retweet, df_mention, df_reply, cfg.max_nodes
+    )
+
+    log.info(f"  Final edge counts:")
+    log.info(f"    follows:  {len(df_follow)} edges")
+    log.info(f"    retweets: {len(df_retweet)} edges")
+    log.info(f"    mentions: {len(df_mention)} edges")
+    log.info(f"    replies:  {len(df_reply)} edges")
 
     # Build unified node mapping
     id_to_idx, idx_to_id, n = build_node_mapping(
@@ -145,15 +204,9 @@ def _compute_significance_for_matrix(
     out_sums = np.asarray(W.sum(axis=1)).ravel()   # out_i = row sums
     in_sums  = np.asarray(W.sum(axis=0)).ravel()   # in_j  = col sums
 
-    # Observed values for candidate edges
-    # Efficiently extract values: W is CSR, use indexing
-    W_coo = W.tocoo()
-    obs_dict = {}
-    for r, c, v in zip(W_coo.row, W_coo.col, W_coo.data):
-        obs_dict[(r, c)] = v
-
-    W_obs = np.array([obs_dict.get((r, c), 0.0) for r, c in zip(rows, cols)],
-                     dtype=np.float64)
+    # Observed values — use sparse matrix array indexing (vectorized)
+    W_csr = W.tocsr()
+    W_obs = np.asarray(W_csr[rows, cols]).ravel().astype(np.float64)
 
     # Expected values
     E_vals = (out_sums[rows] * in_sums[cols]) / m
