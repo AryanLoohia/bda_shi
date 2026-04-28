@@ -1,0 +1,2 @@
+num_nodes,num_candidate_edges,num_edges_after_filtering,density,avg_in_degree,avg_out_degree,num_weakly_connected_components,largest_wcc_size,largest_wcc_fraction,num_strongly_connected_components,reciprocity,in_degree_median,in_degree_max,out_degree_median,out_degree_max,comparison_follow_density,comparison_sparse_density,comparison_overlap_at_20
+500,29499,542,0.0021723446893787573,1.084,1.084,63,424,0.848,460,0.0,1.0,4.0,1.0,4.0,0.09632865731462927,0.0021723446893787573,0
