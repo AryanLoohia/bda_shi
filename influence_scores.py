@@ -11,6 +11,7 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from scipy import stats
+from collections import Counter
 from utils import Config, log, save_csv
 
 _ID_COLS = {"original_node_id", "mapped_node_index", "community_id"}
@@ -62,6 +63,9 @@ def run_clustering(features, pca_result, cfg):
         profiles.loc[c] = features.loc[best_labels == c, feat_cols].mean()
     role_labels = _interpret_clusters(profiles, feat_cols, best_k)
     log.info(f"  Roles: {role_labels}")
+    counts = Counter(best_labels)
+    for c in range(best_k):
+        log.info(f"  Cluster {c} ({role_labels.get(c, 'Unknown')}): {counts[c]} nodes")
     return {"all_results": results, "best_k": best_k, "labels": best_labels,
             "cluster_profiles": profiles, "role_labels": role_labels}
 
@@ -156,8 +160,9 @@ def compute_influence_scores(features, data, cfg):
     struct = df["I_authority"].values + df["I_bridge"].values + df["I_local"].values
     struct_z = (struct - struct.mean()) / (struct.std() + cfg.epsilon)
     df["I_hidden"] = struct_z - raw_fi_z
-    for col in [c for c in df.columns if c.startswith("I_")]:
-        log.info(f"  {col}: mean={df[col].mean():.4f} max={df[col].max():.4f}")
+    for col in ["I_popularity", "I_authority", "I_hub", "I_local", "I_engagement"]:
+        if col in df.columns:
+            log.info(f"  {col}: mean={df[col].mean():.4f} max={df[col].max():.4f}")
     return df
 
 def rank_influencers(df, cluster_result, cfg):
@@ -169,17 +174,15 @@ def rank_influencers(df, cluster_result, cfg):
     role_labels = cluster_result["role_labels"]
     df["cluster_label"] = labels
     df["role"] = [role_labels.get(l, "Unknown") for l in labels]
+    
     categories = {"popularity": "I_popularity", "authority": "I_authority",
-                  "hub_broadcaster": "I_hub", "bridge_broker": "I_bridge",
-                  "local_leader": "I_local", "engagement": "I_engagement",
-                  "hidden": "I_hidden"}
+                  "hub_broadcaster": "I_hub",
+                  "local_leader": "I_local", "engagement": "I_engagement"}
     rel_feats = {"popularity": ["in_degree", "weighted_in_strength", "pagerank"],
                  "authority": ["pagerank", "hits_authority", "k_core_number"],
                  "hub_broadcaster": ["out_degree", "weighted_out_strength", "hits_hub"],
-                 "bridge_broker": ["betweenness_centrality", "participation_coefficient"],
                  "local_leader": ["within_community_zscore", "community_size"],
-                 "engagement": ["reciprocity", "weighted_in_strength"],
-                 "hidden": ["I_authority", "I_bridge", "I_local"]}
+                 "engagement": ["reciprocity", "weighted_in_strength"]}
     all_rankings = []
     for cat, scol in categories.items():
         top_idx = df[scol].nlargest(k).index
